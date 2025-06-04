@@ -9,12 +9,13 @@ from datetime import datetime
 import datetime as dt    
 import re
 import math
+import time
 
 # Load .env variables (including API key)
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 INFERENCE_URL = os.getenv("FASTAPI_INFER_URL", "http://localhost:8001/infer")
-MAX_ELEMENTS = 625
+MAX_ELEMENTS = 100
 
 gmaps = googlemaps.Client(key=GOOGLE_API_KEY)
 
@@ -52,16 +53,13 @@ def _parse_duration(iso: str) -> float:
     return h * 3600 + m_ * 60 + s
 
 
+
+
 def _distmat(latlons: list[tuple[float, float]]):
-    """
-    Query **Routes API  v2  computeRouteMatrix** and return
-    (distance_km_matrix, duration_sec_matrix) as nested lists.
-    """
     n = len(latlons)
     km   = [[0.0] * n for _ in range(n)]
     secs = [[0.0] * n for _ in range(n)]
 
-    # ---------- build waypoint json blobs once ----------
     wp = [
         {
             "waypoint": {
@@ -73,12 +71,10 @@ def _distmat(latlons: list[tuple[float, float]]):
         for lat, lon in latlons
     ]
 
-    # ---------- chunk so that |origins|×|dest| ≤ 625 ----------
-    step = max(1, math.floor(MAX_ELEMENTS / n))  # dest chunk size
+    step = max(1, math.floor(MAX_ELEMENTS / n))
     for o0 in range(0, n, step):
         origins = wp[o0 : o0 + step]
 
-        # chunk destinations for each origin chunk
         d_step = max(1, math.floor(MAX_ELEMENTS / len(origins)))
         for d0 in range(0, n, d_step):
             destinations = wp[d0 : d0 + d_step]
@@ -88,14 +84,17 @@ def _distmat(latlons: list[tuple[float, float]]):
                 "destinations": destinations,
                 "travelMode": "DRIVE",
                 "routingPreference": "TRAFFIC_AWARE",
-                "departureTime": _rfc3339_utc_plus(60),   # ⬅ 60-sec buffer
+                "departureTime": _rfc3339_utc_plus(60),
                 "units": "METRIC"
             }
+
+            # 🛑 Add a brief sleep to avoid 429 (adjust as needed)
+            time.sleep(1)  # 5 requests/sec = 500 elements/sec if each has 100
 
             resp = requests.post(
                 ROUTES_ENDPOINT,
                 headers=HEADERS_TEMPLATE,
-                json=body,                     # <-- correct way
+                json=body,
                 stream=True,
                 timeout=(10, 90),
             )
@@ -104,16 +103,19 @@ def _distmat(latlons: list[tuple[float, float]]):
                     f"Routes API Error {resp.status_code}: {resp.text}"
                 )
 
-            entries = resp.json()  # the whole thing is a JSON array
+            entries = resp.json()
             for obj in entries:
+                if "originIndex" not in obj or "destinationIndex" not in obj:
+                    print(f"⚠️ Skipping entry with missing indices: {obj}")
+                    continue  # Skip malformed response entries
+
                 r = o0 + obj["originIndex"]
                 c = d0 + obj["destinationIndex"]
-                if "distanceMeters" not in obj:
-                    print(f"Missing distanceMeters for origin {r}, dest {c}")
                 dist_m = obj.get("distanceMeters", 0)
                 dur_s  = obj.get("duration", "PT0S")
                 km[r][c]   = dist_m / 1000.0
                 secs[r][c] = _parse_duration(dur_s)
+
 
     return km, secs
 

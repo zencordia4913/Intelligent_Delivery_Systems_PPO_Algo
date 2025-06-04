@@ -109,6 +109,11 @@
       <!-- Submit -->
       <button class="submit-btn" @click="submitAddresses">🚀 Plan Route</button>
       <button class="submit-btn" @click="clearForm">🧹 Clear Form</button>
+      <button class="add-btn" @click="downloadCSVTemplate">📄 Download Template</button>
+      <div class="form-row">
+        <label>Upload CSV:</label>
+        <input type="file" @change="handleCSVUpload" accept=".csv" />
+      </div>      
 
       <!-- Results -->
       <div v-if="processedRoutes.length" class="results-section">
@@ -179,7 +184,7 @@
 </template>
 
 <script>
-
+import Papa from 'papaparse';
 import MapPanel from "./components/MapPanel.vue";
 
 export default {
@@ -205,6 +210,37 @@ export default {
     MapPanel,
   },
   methods: {
+    handleCSVUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => {
+          try {
+            this.customers = results.data.map(row => ({
+              address: row.address,
+              demand: parseFloat(row.demand),
+              start_time: row.start_time,
+              end_time: row.end_time,
+              service_time: parseInt(row.service_time)
+            }));
+          } catch (err) {
+            this.error = "Invalid CSV format.";
+            console.error(err);
+          }
+        }
+      });
+    },
+    downloadCSVTemplate() {
+      const headers = "address,demand,start_time,end_time,service_time\n";
+      const blob = new Blob([headers], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "route_planner_template.csv";
+      link.click();
+    },
     mounted() {
       if (typeof google === "undefined") {
         const script = document.createElement("script");
